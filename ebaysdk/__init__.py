@@ -9,7 +9,7 @@ Licensed under CDDL 1.0
 import platform
 import logging
 
-__version__ = '2.2.0'
+__version__ = '2.3.0'
 Version = __version__  # for backward compatibility
 
 try:
@@ -101,5 +101,14 @@ def parallel(*args, **kwargs):
         'SDK import must be changed as follows:\n\n- %s\n+ %s\n\n' % (
             'from ebaysdk import parallel',
             'from ebaysdk.parallel import Parallel as parallel',
+        )
+    )
+
+
+def browse(*args, **kwargs):
+    raise ImportError(
+        'SDK import must be changed as follows:\n\n- %s\n+ %s\n\n' % (
+            'from ebaysdk import browse',
+            'from ebaysdk.browse import Connection as browse',
         )
     )

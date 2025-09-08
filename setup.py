@@ -37,7 +37,7 @@ setup(
     license="COMMON DEVELOPMENT AND DISTRIBUTION LICENSE (CDDL) Version 1.0",
     packages=find_packages(include=['ebaysdk', 'ebaysdk.*']),
     provides=[PKG],
-    install_requires=['lxml', 'requests'],
+    install_requires=['authlib', 'lxml', 'requests'],
     test_suite='tests',
     long_description=long_desc,
     classifiers=[
