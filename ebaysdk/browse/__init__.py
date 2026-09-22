@@ -1,21 +1,26 @@
 # -*- coding: utf-8 -*-
 
 '''
-Copyright 2012-2025 eBay Inc.
+Copyright 2012-2026 eBay Inc.
 Authored by: Jeremy Setton
 Licensed under CDDL 1.0
 '''
 
 import json
+from time import sleep
 
+from authlib.integrations.base_client.errors import OAuthError
 from authlib.integrations.requests_client import OAuth2Session
-from authlib.oauth2 import OAuth2Error
 from ebaysdk import log, UserAgent
 from ebaysdk.connection import BaseConnection, HTTP_SSL
 from ebaysdk.config import Config
 from ebaysdk.utils import smart_encode, smart_encode_request_data
 from ebaysdk.exception import ConnectionError
-from requests import Request, RequestException
+from requests import Request
+from requests.exceptions import ConnectionError as RequestsConnectionError, RequestException, Timeout
+
+_RETRYABLE_OAUTH_ERRORS = {"invalid_client", "server_error", "temporarily_unavailable"}
+_RETRYABLE_REQUEST_EXCEPTIONS = (RequestsConnectionError, Timeout)
 
 
 class Connection(BaseConnection):
@@ -229,6 +234,23 @@ class Connection(BaseConnection):
 
         return errors
 
+    def _fetch_token_with_retry(self, client, max_retries=3, base_delay=2, **kwargs):
+        """Wraps client.fetch_token() with retry on transient OAuth/network errors."""
+
+        for attempt in range(max_retries + 1):
+            if attempt:
+                sleep(base_delay * (2 ** (attempt - 1)))
+            try:
+                return client.fetch_token(**kwargs)
+            except (OAuthError, RequestException) as e:
+                is_last_attempt = attempt == max_retries
+                is_retryable = (
+                    isinstance(e, _RETRYABLE_REQUEST_EXCEPTIONS)
+                    or (isinstance(e, OAuthError) and e.error in _RETRYABLE_OAUTH_ERRORS)
+                )
+                if not is_retryable or is_last_attempt:
+                    raise
+
     @property
     def access_token(self):
         """Get OAuth access token using client credentials flow."""
@@ -250,11 +272,12 @@ class Connection(BaseConnection):
                     token_endpoint_auth_method='client_secret_basic',
                 )
 
-                self._token = client.fetch_token(
+                self._token = self._fetch_token_with_retry(
+                    client,
                     url=f'https://{self.config.get("domain")}/identity/v1/oauth2/token',
-                    grant_type='client_credentials',
+                    grant_type="client_credentials",
                 )
-            except (OAuth2Error, RequestException) as e:
+            except (OAuthError, RequestException) as e:
                 raise ConnectionError(f'Failed to get access token: {e}')
 
         return self._token['access_token']
