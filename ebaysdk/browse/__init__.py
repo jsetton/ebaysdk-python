@@ -6,8 +6,12 @@ Authored by: Jeremy Setton
 Licensed under CDDL 1.0
 '''
 
+import hashlib
 import json
-from time import sleep
+import os
+import tempfile
+from pathlib import Path
+from time import sleep, time
 
 from authlib.integrations.base_client.errors import OAuthError
 from authlib.integrations.requests_client import OAuth2Session
@@ -19,6 +23,7 @@ from ebaysdk.exception import ConnectionError
 from requests import Request
 from requests.exceptions import ConnectionError as RequestsConnectionError, RequestException, Timeout
 
+_DEFAULT_TOKEN_CACHE_DIR = Path(tempfile.gettempdir()) / "ebaysdk_token_cache"
 _RETRYABLE_OAUTH_ERRORS = {"invalid_client", "server_error", "temporarily_unavailable"}
 _RETRYABLE_REQUEST_EXCEPTIONS = (RequestsConnectionError, Timeout)
 
@@ -251,19 +256,60 @@ class Connection(BaseConnection):
                 if not is_retryable or is_last_attempt:
                     raise
 
+    def _token_cache_path(self, client_id):
+        """Get token cache path"""
+
+        cache_dir = Path(self.config.get('token_cache_dir', _DEFAULT_TOKEN_CACHE_DIR))
+        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        key = hashlib.sha256(f"{self.config.get('domain')}:{client_id}".encode()).hexdigest()[:16]
+        return cache_dir / f"token_{key}.json"
+
+    def _load_cached_token(self, client_id):
+        """Loads cached token"""
+
+        path = self._token_cache_path(client_id)
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return None
+
+    def _store_cached_token(self, client_id, token):
+        """Stores cached token"""
+
+        path = self._token_cache_path(client_id)
+        fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".tmp_token_")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(dict(token), f)
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, path)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+
+    @staticmethod
+    def _is_token_expired(token, leeway=60):
+        """Checks if token is expired"""
+
+        return not isinstance(token, dict) or token.get("expires_at", 0) - leeway <= time()
+
     @property
     def access_token(self):
         """Get OAuth access token using client credentials flow."""
 
-        if not hasattr(self, '_token') or self._token.is_expired():
-            client_id = self.config.get('appid')
-            client_secret = self.config.get('certid')
+        client_id = self.config.get('appid')
+        client_secret = self.config.get('certid')
 
-            if not client_id or not client_secret:
-                raise ValueError(
-                    'appid (client id) and certid (client secret) are required for OAuth'
-                )
+        if not client_id or not client_secret:
+            raise ValueError(
+                'appid (client id) and certid (client secret) are required for OAuth'
+            )
 
+        if not hasattr(self, "_token"):
+            self._token = self._load_cached_token(client_id)
+
+        if self._is_token_expired(self._token):
             try:
                 client = OAuth2Session(
                     client_id=client_id,
@@ -275,9 +321,11 @@ class Connection(BaseConnection):
                 self._token = self._fetch_token_with_retry(
                     client,
                     url=f'https://{self.config.get("domain")}/identity/v1/oauth2/token',
-                    grant_type="client_credentials",
+                    grant_type='client_credentials',
                 )
             except (OAuthError, RequestException) as e:
                 raise ConnectionError(f'Failed to get access token: {e}')
+
+            self._store_cached_token(client_id, self._token)
 
         return self._token['access_token']
